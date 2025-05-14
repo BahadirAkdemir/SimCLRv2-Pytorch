@@ -28,7 +28,7 @@ These edits are **minimal and only for compatibility/testing purposes**. The cor
 ---
 
 ## Directory Structure
-
+```bash
 simclr-pytorch/
 ├── model.py
 ├── run.py
@@ -40,7 +40,7 @@ simclr-pytorch/
 ├── README.md
 ├── LICENSE              # MIT License from the original repository
 └── requirements.txt
-
+```
 ## Acknowledgements
 
 Thanks to the authors of SimCLR and the maintainers of the original TensorFlow implementation at [google-research/simclr](https://github.com/google-research/simclr).
