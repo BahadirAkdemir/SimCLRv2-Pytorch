@@ -29,20 +29,17 @@ These edits are **minimal and only for compatibility/testing purposes**. The cor
 
 ## Directory Structure
 
-"""
 simclr-pytorch/
 ├── model.py
 ├── run.py
-└── ...
-├── pytorch/ # PyTorch implementation of SimCLR
-│ ├── model.py
-│ ├── run.py
-│ └── ...
-├── tf2/ # Slightly modified original TensorFlow 2 implementation
+├── pytorch/             # PyTorch implementation of SimCLR
+│   ├── model.py
+│   ├── run.py
+│   └── ...
+├── tf2/                 # Slightly modified original TensorFlow 2 implementation
 ├── README.md
-├── LICENSE # MIT License from the original repository
+├── LICENSE              # MIT License from the original repository
 └── requirements.txt
-"""
 
 ## Acknowledgements
 
