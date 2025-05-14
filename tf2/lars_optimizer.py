@@ -18,11 +18,12 @@
 import re
 
 import tensorflow.compat.v2 as tf
+from tensorflow.keras.optimizers.legacy import Optimizer
 
 EETA_DEFAULT = 0.001
 
 
-class LARSOptimizer(tf.keras.optimizers.legacy.Optimizer):
+class LARSOptimizer(Optimizer):
   """Layer-wise Adaptive Rate Scaling for large batch training.
 
   Introduced by "Large Batch Training of Convolutional Networks" by Y. You,
@@ -60,7 +61,8 @@ class LARSOptimizer(tf.keras.optimizers.legacy.Optimizer):
       eeta: A `float` for scaling of learning rate when computing trust ratio.
       name: The name for the scope.
     """
-    super(LARSOptimizer, self).__init__(name)
+    super().__init__(name=name, lr=learning_rate)
+
 
     self._set_hyper("learning_rate", learning_rate)
     self.momentum = momentum
