@@ -8,8 +8,7 @@ from .config_args import args  # simulate FLAGS using global args
 
 BATCH_NORM_EPSILON = 1e-5
 
-class BatchNormRelu(nn.Module):  # pylint: disable=missing-docstring
-
+class BatchNormRelu(nn.Module):
     def __init__(self,
                  relu=True,
                  init_zero=False,
@@ -22,57 +21,65 @@ class BatchNormRelu(nn.Module):  # pylint: disable=missing-docstring
         self.center = center
         self.scale = scale
         self.data_format = data_format
-        self.init_zero = init_zero
+        self.gamma_initializer = 'zeros' if init_zero else 'ones'
 
-        # Default to last axis unless using channels_first
-        self.axis = 1 if data_format == 'channels_first' else -1
-
-        self.num_features = None
         self.bn = None
+        self._built = False
 
-    def build(self, input_shape):
-        if self.axis == 1:
-            self.num_features = input_shape[1]
+    def build(self, inputs):
+        if self.data_format == 'channels_last':
+            num_features = inputs.shape[-1]
         else:
-            self.num_features = input_shape[-1]
+            num_features = inputs.shape[1]
 
-        # BatchNorm2d always uses fused implementation in PyTorch
-        # No equivalent of fused=False — closest is to use functional op manually
-        self.bn = nn.BatchNorm2d(
-            num_features=self.num_features,
-            eps=BATCH_NORM_EPSILON,
-            momentum=args.batch_norm_decay,
-            affine=True
-        )
+        affine = self.center or self.scale
 
-        if self.init_zero:
-            nn.init.zeros_(self.bn.weight)
+
+        if inputs.dim() == 4:
+            self.bn = nn.BatchNorm2d(num_features, eps=BATCH_NORM_EPSILON,
+                                     momentum=args.batch_norm_decay,
+                                     affine=affine)
+        elif inputs.dim() in [2, 3]:
+            self.bn = nn.BatchNorm1d(num_features, eps=BATCH_NORM_EPSILON,
+                                     momentum=args.batch_norm_decay,
+                                     affine=affine)
         else:
-            nn.init.ones_(self.bn.weight)
+            raise ValueError(f"Unsupported input dimension {inputs.dim()} for BatchNormRelu.")
 
-        if not self.scale:
-            self.bn.weight.requires_grad = False
-        if not self.center:
-            self.bn.bias.requires_grad = False
+        if affine:
+            if self.gamma_initializer == 'zeros':
+                nn.init.zeros_(self.bn.weight)
+            else:
+                nn.init.ones_(self.bn.weight)
 
-    def forward(self, inputs):
-        if self.bn is None:
-            self.build(inputs.shape)
+        self._built = True
 
-        inputs = self.bn(inputs)
+    def forward(self, inputs, training=False):
+        if not self._built:
+            self.build(inputs)
+
+        self.bn.train(training)
+        x = inputs
+
+        if self.data_format == 'channels_last' and x.dim() == 4:
+            x = x.permute(0, 3, 1, 2)  # NHWC ➝ NCHW
+
+        x = self.bn(x)
+
+        if self.data_format == 'channels_last' and inputs.dim() == 4:
+            x = x.permute(0, 2, 3, 1)  # NCHW ➝ NHWC
 
         if self.relu:
-            inputs = F.relu(inputs)
+            x = F.relu(x, inplace=True)
 
-        return inputs
-
+        return x
 
 class DropBlock(nn.Module):  # pylint: disable=missing-docstring
 
     def __init__(self,
                  keep_prob,
                  dropblock_size,
-                 data_format='channels_last',
+                 data_format='channels_first',
                  **kwargs):
         super(DropBlock, self).__init__(**kwargs)
         self.keep_prob = keep_prob
@@ -142,7 +149,7 @@ class DropBlock(nn.Module):  # pylint: disable=missing-docstring
 
 class FixedPadding(nn.Module):  # pylint: disable=missing-docstring
 
-    def __init__(self, kernel_size, data_format='channels_last', **kwargs):
+    def __init__(self, kernel_size, data_format='channels_first', **kwargs):
         super(FixedPadding, self).__init__(**kwargs)
         self.kernel_size = kernel_size
         self.data_format = data_format
@@ -173,7 +180,7 @@ class Conv2dFixedPadding(nn.Module):  # pylint: disable=missing-docstring
                  filters,
                  kernel_size,
                  strides,
-                 data_format='channels_last',
+                 data_format='channels_first',
                  **kwargs):
         super(Conv2dFixedPadding, self).__init__(**kwargs)
         self.data_format = data_format
@@ -237,7 +244,7 @@ class SK_Conv2D(nn.Module):  # pylint: disable=invalid-name
                  strides,
                  sk_ratio,
                  min_dim=32,
-                 data_format='channels_last',
+                 data_format='channels_first',
                  **kwargs):
         super(SK_Conv2D, self).__init__(**kwargs)
         self.data_format = data_format
@@ -309,7 +316,7 @@ class SK_Conv2D(nn.Module):  # pylint: disable=invalid-name
 class SE_Layer(nn.Module):  # pylint: disable=invalid-name
     """Squeeze and Excitation layer (https://arxiv.org/abs/1709.01507)."""
 
-    def __init__(self, filters, se_ratio, data_format='channels_last', **kwargs):
+    def __init__(self, filters, se_ratio, data_format='channels_first', **kwargs):
         super(SE_Layer, self).__init__(**kwargs)
         self.data_format = data_format
         reduced_channels = max(1, int(filters * se_ratio))
@@ -358,7 +365,7 @@ class ResidualBlock(nn.Module):  # pylint: disable=missing-docstring
                  filters,
                  strides,
                  use_projection=False,
-                 data_format='channels_last',
+                 data_format='channels_first',
                  dropblock_keep_prob=None,
                  dropblock_size=None,
                  **kwargs):
@@ -453,7 +460,7 @@ class BottleneckBlock(nn.Module):  # """BottleneckBlock."""
                  filters,
                  strides,
                  use_projection=False,
-                 data_format='channels_last',
+                 data_format='channels_first',
                  dropblock_keep_prob=None,
                  dropblock_size=None,
                  **kwargs):
@@ -581,7 +588,7 @@ class BlockGroup(nn.Module):  # pylint: disable=missing-docstring
                  block_fn,
                  blocks,
                  strides,
-                 data_format='channels_last',
+                 data_format='channels_first',
                  dropblock_keep_prob=None,
                  dropblock_size=None,
                  **kwargs):
@@ -630,7 +637,7 @@ class Resnet(nn.Module):  # pylint: disable=missing-docstring
                  layers,
                  width_multiplier,
                  cifar_stem=False,
-                 data_format='channels_last',
+                 data_format='channels_first',
                  dropblock_keep_probs=None,
                  dropblock_size=None,
                  **kwargs):
@@ -767,7 +774,7 @@ class Resnet(nn.Module):  # pylint: disable=missing-docstring
 def resnet(resnet_depth,
            width_multiplier,
            cifar_stem=False,
-           data_format='channels_last',
+           data_format='channels_first',
            dropblock_keep_probs=None,
            dropblock_size=None):
   """Returns the ResNet model for a given size and number of output classes."""

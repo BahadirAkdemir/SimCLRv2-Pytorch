@@ -22,11 +22,13 @@ def build_input_fn(builder, global_batch_size, topology, is_training):
         def map_fn(image, label):
             if is_training and args.train_mode == 'pretrain':
                 xs = [preprocess_fn_pretrain(image) for _ in range(2)]
-                image = torch.cat(xs, dim=0)
+                image = torch.cat(xs, dim=1)
             else:
                 image = preprocess_fn_finetune(image)
             label = F.one_hot(torch.tensor(label), num_classes=num_classes).float()
             return image, label
+
+        logging.info('num_input_pipelines: %d', input_context.num_input_pipelines)
 
         if is_training:
             dataset = datasets.ImageFolder(builder.root, transform=None)
