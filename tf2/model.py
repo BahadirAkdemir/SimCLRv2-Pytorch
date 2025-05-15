@@ -20,8 +20,11 @@ from absl import flags
 
 import data_util
 import lars_optimizer
-import resnet
 import tensorflow.compat.v2 as tf
+
+from tf2.resnet import BatchNormRelu
+
+from tf2 import resnet
 
 FLAGS = flags.FLAGS
 
@@ -199,7 +202,7 @@ class ProjectionHead(tf.keras.layers.Layer):
                                                        training))
     elif FLAGS.proj_head_mode == 'nonlinear':
       for j in range(FLAGS.num_proj_layers):
-        hiddens = self.linear_layers[j](hiddens_list[-1], training)
+        hiddens = self.linear_layers[j](hiddens_list[-1], training=training)
         if j != FLAGS.num_proj_layers - 1:
           # for the middle layers, use bias and relu for the output.
           hiddens = tf.nn.relu(hiddens)
@@ -220,7 +223,7 @@ class SupervisedHead(tf.keras.layers.Layer):
     self.linear_layer = LinearLayer(num_classes)
 
   def call(self, inputs, training):
-    inputs = self.linear_layer(inputs, training)
+    inputs = self.linear_layer(inputs, training=training)
     inputs = tf.identity(inputs, name='logits_sup')
     return inputs
 
@@ -263,18 +266,18 @@ class Model(tf.keras.models.Model):
 
     # Add heads.
     projection_head_outputs, supervised_head_inputs = self._projection_head(
-        hiddens, training)
+        hiddens, training=training)
 
     if FLAGS.train_mode == 'finetune':
       supervised_head_outputs = self.supervised_head(supervised_head_inputs,
-                                                     training)
+                                                     training=training)
       return None, supervised_head_outputs
     elif FLAGS.train_mode == 'pretrain' and FLAGS.lineareval_while_pretraining:
       # When performing pretraining and linear evaluation together we do not
       # want information from linear eval flowing back into pretraining network
       # so we put a stop_gradient.
       supervised_head_outputs = self.supervised_head(
-          tf.stop_gradient(supervised_head_inputs), training)
+          tf.stop_gradient(supervised_head_inputs), training=training)
       return projection_head_outputs, supervised_head_outputs
     else:
       return projection_head_outputs, None
