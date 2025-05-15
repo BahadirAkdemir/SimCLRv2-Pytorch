@@ -239,6 +239,7 @@ def center_crop(image, height, width, crop_proportion):
 
   image = tf.image.resize([image], [height, width],
                           method=tf.image.ResizeMethod.BICUBIC)[0]
+  image = tf.clip_by_value(image, 0.0, 1.0)
 
   return image
 
@@ -316,8 +317,10 @@ def crop_and_resize(image, height, width):
       area_range=(0.08, 1.0),
       max_attempts=100,
       scope=None)
-  return tf.image.resize([image], [height, width],
-                         method=tf.image.ResizeMethod.BICUBIC)[0]
+
+  image = tf.image.resize([image], [height, width],
+                  method=tf.image.ResizeMethod.BICUBIC)[0]
+  return tf.clip_by_value(image, 0.0, 1.0)
 
 
 def gaussian_blur(image, kernel_size, sigma, padding='SAME'):
