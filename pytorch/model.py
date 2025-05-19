@@ -1,22 +1,22 @@
 import math
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 from . import data_util
 from .resnet import *
+import pytorch.lars_optimizer as l
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from config_args import args
 
-from .config_args import args
 
-
-def build_optimizer(params, cfg, learning_rate):
+def build_optimizer(params, learning_rate):
     if args.optimizer == 'momentum':
         return torch.optim.SGD(params, lr=learning_rate, momentum=args.momentum, nesterov=True)
     elif args.optimizer == 'adam':
         return torch.optim.Adam(params, lr=learning_rate)
     elif args.optimizer == 'lars':
-        from lars_optimizer import LARSOptimizer  # Assuming it's defined elsewhere
-        return LARSOptimizer(learning_rate,
+        return l.LARSOptimizer(params=params,
+                             learning_rate=learning_rate,
                              momentum=args.momentum,
                              weight_decay=args.weight_decay,
                              exclude_from_weight_decay=[
@@ -25,10 +25,6 @@ def build_optimizer(params, cfg, learning_rate):
     else:
         raise ValueError(f'Unknown optimizer {args.optimizer}')
 
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 def add_weight_decay(model, adjust_per_optimizer=True):
     """
@@ -71,24 +67,24 @@ def get_train_steps(num_examples):
 
 
 class WarmUpAndCosineDecay:
-    def __init__(self, base_lr, cfg, num_examples):
-        self.args = args
+    def __init__(self, base_lr, num_examples):
         self.base_lr = base_lr
-        self.cfg = cfg
         self.num_examples = num_examples
         self.total_steps = get_train_steps(num_examples)
         self.warmup_steps = int(round(args.warmup_epochs * num_examples / args.train_batch_size))
 
     def __call__(self, step):
-        if self.args.learning_rate_scaling == 'linear':
-            scaled_lr = self.base_lr * self.args.train_batch_size / 256.
-        elif self.args.learning_rate_scaling == 'sqrt':
-            scaled_lr = self.base_lr * math.sqrt(self.args.train_batch_size)
+        if args.learning_rate_scaling == 'linear':
+            scaled_lr = self.base_lr * args.train_batch_size / 256.
+        elif args.learning_rate_scaling == 'sqrt':
+            scaled_lr = self.base_lr * math.sqrt(args.train_batch_size)
         else:
-            raise ValueError(f'Unknown learning rate scaling {self.args.learning_rate_scaling}')
+            raise ValueError(f'Unknown learning rate scaling {args.learning_rate_scaling}')
+
+        learning_rate = (step / float(self.warmup_steps) * scaled_lr if self.warmup_steps else scaled_lr)
 
         if step < self.warmup_steps:
-            return step / float(self.warmup_steps) * scaled_lr
+            return learning_rate
         else:
             decay_steps = self.total_steps - self.warmup_steps
             cosine_decay = 0.5 * (1 + math.cos(math.pi * (step - self.warmup_steps) / decay_steps))
@@ -127,6 +123,7 @@ class LinearLayer(nn.Module):
             num_classes,
             bias=(self.use_bias and not self.use_bn)
         )
+
         nn.init.normal_(self.linear.weight, std=0.01)
 
         if self.use_bn:
@@ -138,6 +135,7 @@ class LinearLayer(nn.Module):
         if self.linear is None:
             self.build(inputs.shape)
 
+        self.to(inputs.device) # TODO: Find a way to fix (device_problem)
         inputs = self.linear(inputs)
 
         if self.use_bn:
@@ -246,12 +244,8 @@ class Model(nn.Module):
         self.lineareval_while_pretraining = args.lineareval_while_pretraining
         self.use_blur = args.use_blur
 
-        self.resnet_model = resnet(
-            resnet_depth=args.resnet_depth,
-            width_multiplier=args.width_multiplier,
-            cifar_stem=(args.image_size <= 32)
-        )
-
+        self.resnet_model = resnet(resnet_depth=args.resnet_depth, width_multiplier=args.width_multiplier)
+        #self.vit_model = vit()
         self._projection_head = ProjectionHead()
 
         if self.train_mode == 'finetune' or self.lineareval_while_pretraining:
@@ -291,6 +285,7 @@ class Model(nn.Module):
 
         # Base network forward pass
         hiddens = self.resnet_model(features)
+        #hiddens = self.vit_model(features)
 
         # Projection head
         projection_head_outputs, supervised_head_inputs = self._projection_head(hiddens)

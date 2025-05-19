@@ -1,10 +1,9 @@
-# batch_norm_relu.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import logging
 
-from .config_args import args  # simulate FLAGS using global args
+from config_args import args  # simulate FLAGS using global args
 
 BATCH_NORM_EPSILON = 1e-5
 
@@ -14,26 +13,20 @@ class BatchNormRelu(nn.Module):
                  init_zero=False,
                  center=True,
                  scale=True,
-                 data_format='channels_last',
                  **kwargs):
         super(BatchNormRelu, self).__init__()
         self.relu = relu
         self.center = center
         self.scale = scale
-        self.data_format = data_format
         self.gamma_initializer = 'zeros' if init_zero else 'ones'
 
         self.bn = None
         self._built = False
 
     def build(self, inputs):
-        if self.data_format == 'channels_last':
-            num_features = inputs.shape[-1]
-        else:
-            num_features = inputs.shape[1]
+        num_features = inputs.shape[1]
 
         affine = self.center or self.scale
-
 
         if inputs.dim() == 4:
             self.bn = nn.BatchNorm2d(num_features, eps=BATCH_NORM_EPSILON,
@@ -61,13 +54,8 @@ class BatchNormRelu(nn.Module):
         self.bn.train(training)
         x = inputs
 
-        if self.data_format == 'channels_last' and x.dim() == 4:
-            x = x.permute(0, 3, 1, 2)  # NHWC ➝ NCHW
-
+        self.to(x.device)  # TODO: Find a way to fix (device_problem)
         x = self.bn(x)
-
-        if self.data_format == 'channels_last' and inputs.dim() == 4:
-            x = x.permute(0, 2, 3, 1)  # NCHW ➝ NHWC
 
         if self.relu:
             x = F.relu(x, inplace=True)
@@ -79,17 +67,14 @@ class DropBlock(nn.Module):  # pylint: disable=missing-docstring
     def __init__(self,
                  keep_prob,
                  dropblock_size,
-                 data_format='channels_first',
                  **kwargs):
         super(DropBlock, self).__init__(**kwargs)
         self.keep_prob = keep_prob
         self.dropblock_size = dropblock_size
-        self.data_format = data_format
 
     def forward(self, net):
         keep_prob = self.keep_prob
         dropblock_size = self.dropblock_size
-        data_format = self.data_format
 
         if keep_prob is None:
             return net
@@ -97,18 +82,14 @@ class DropBlock(nn.Module):  # pylint: disable=missing-docstring
         logging.info(
             f'Applying DropBlock: dropblock_size {dropblock_size}, net.shape {net.shape}')
 
-        if data_format == 'channels_last':
-            _, width, height, _ = net.shape
-            net = net.permute(0, 3, 1, 2)  # Convert to NCHW for processing
-        else:
-            _, _, width, height = net.shape
+        _, _, width, height = net.shape
 
         if width != height:
             raise ValueError('Input tensor with width != height is not supported.')
 
         dropblock_size = min(dropblock_size, width)
-        gamma = ((1.0 - keep_prob) * width**2) / (
-            dropblock_size**2 * (width - dropblock_size + 1)**2)
+        gamma = ((1.0 - keep_prob) * width ** 2) / (
+                dropblock_size ** 2 * (width - dropblock_size + 1) ** 2)
 
         # Generate mask
         mask = torch.ones((net.shape[0], 1, width, height), device=net.device)
@@ -122,10 +103,10 @@ class DropBlock(nn.Module):  # pylint: disable=missing-docstring
         block_center[:, :, valid_start:valid_end, valid_start:valid_end] = True
 
         block_pattern = (
-            (~block_center).float()
-            + (1 - gamma)
-            + rand_noise
-        ) >= 1.0
+                                (~block_center).float()
+                                + (1 - gamma)
+                                + rand_noise
+                        ) >= 1.0
         block_pattern = block_pattern.float()
 
         if dropblock_size == width:
@@ -142,37 +123,23 @@ class DropBlock(nn.Module):  # pylint: disable=missing-docstring
         percent_ones = block_pattern.sum() / block_pattern.numel()
         net = net / percent_ones * block_pattern
 
-        if data_format == 'channels_last':
-            net = net.permute(0, 2, 3, 1)  # Back to NHWC
-
         return net
 
 class FixedPadding(nn.Module):  # pylint: disable=missing-docstring
 
-    def __init__(self, kernel_size, data_format='channels_first', **kwargs):
+    def __init__(self, kernel_size, **kwargs):
         super(FixedPadding, self).__init__(**kwargs)
         self.kernel_size = kernel_size
-        self.data_format = data_format
 
     def forward(self, inputs):
         kernel_size = self.kernel_size
-        data_format = self.data_format
-
         pad_total = kernel_size - 1
         pad_beg = pad_total // 2
         pad_end = pad_total - pad_beg
 
-        if data_format == 'channels_first':
-            # Pad format: (left, right, top, bottom)
-            padded_inputs = F.pad(inputs, (pad_beg, pad_end, pad_beg, pad_end))
-        else:
-            # Convert NHWC to NCHW
-            inputs = inputs.permute(0, 3, 1, 2)
-            padded_inputs = F.pad(inputs, (pad_beg, pad_end, pad_beg, pad_end))
-            padded_inputs = padded_inputs.permute(0, 2, 3, 1)
+        padded_inputs = F.pad(inputs, (pad_beg, pad_end, pad_beg, pad_end))
 
         return padded_inputs
-
 
 class Conv2dFixedPadding(nn.Module):  # pylint: disable=missing-docstring
 
@@ -180,11 +147,9 @@ class Conv2dFixedPadding(nn.Module):  # pylint: disable=missing-docstring
                  filters,
                  kernel_size,
                  strides,
-                 data_format='channels_first',
                  **kwargs):
         super(Conv2dFixedPadding, self).__init__(**kwargs)
-        self.data_format = data_format
-        self.fixed_padding = FixedPadding(kernel_size, data_format) if strides > 1 else None
+        self.fixed_padding = FixedPadding(kernel_size) if strides > 1 else None
 
         padding = 0 if strides > 1 else kernel_size // 2  # SAME padding if stride == 1
 
@@ -203,9 +168,6 @@ class Conv2dFixedPadding(nn.Module):  # pylint: disable=missing-docstring
         self.strides = strides
 
     def forward(self, inputs):
-        if self.data_format == 'channels_last':
-            inputs = inputs.permute(0, 3, 1, 2)
-
         if not self.inited:
             in_channels = inputs.shape[1]
             self.conv2d.in_channels = in_channels
@@ -222,19 +184,14 @@ class Conv2dFixedPadding(nn.Module):  # pylint: disable=missing-docstring
 
         if self.fixed_padding is not None:
             inputs = self.fixed_padding(inputs)
-
+        self.to(inputs.device)  # TODO: Find a way to fix (device_problem)
         outputs = self.conv2d(inputs)
 
-        if self.data_format == 'channels_last':
-            outputs = outputs.permute(0, 2, 3, 1)
-
         return outputs
-
 
 class IdentityLayer(nn.Module):
     def forward(self, inputs):
         return inputs.clone()
-
 
 class SK_Conv2D(nn.Module):  # pylint: disable=invalid-name
     """Selective kernel convolutional layer (https://arxiv.org/abs/1903.06586)."""
@@ -244,10 +201,8 @@ class SK_Conv2D(nn.Module):  # pylint: disable=invalid-name
                  strides,
                  sk_ratio,
                  min_dim=32,
-                 data_format='channels_first',
                  **kwargs):
         super(SK_Conv2D, self).__init__(**kwargs)
-        self.data_format = data_format
         self.filters = filters
         self.sk_ratio = sk_ratio
         self.min_dim = min_dim
@@ -256,9 +211,9 @@ class SK_Conv2D(nn.Module):  # pylint: disable=invalid-name
             filters=2 * filters,
             kernel_size=3,
             strides=strides,
-            data_format=data_format)
+            )
 
-        self.batch_norm_relu = BatchNormRelu(data_format=data_format)
+        self.batch_norm_relu = BatchNormRelu()
 
         mid_dim = max(int(filters * sk_ratio), min_dim)
 
@@ -269,7 +224,7 @@ class SK_Conv2D(nn.Module):  # pylint: disable=invalid-name
             stride=1,
             bias=False)
 
-        self.batch_norm_relu_1 = BatchNormRelu(data_format=data_format)
+        self.batch_norm_relu_1 = BatchNormRelu()
 
         self.conv2d_1 = nn.Conv2d(
             in_channels=mid_dim,
@@ -281,9 +236,6 @@ class SK_Conv2D(nn.Module):  # pylint: disable=invalid-name
         self.inited = False
 
     def forward(self, inputs, training=True):
-        if self.data_format == 'channels_last':
-            inputs = inputs.permute(0, 3, 1, 2)  # NHWC -> NCHW
-
         channel_axis = 1
         pooling_axes = [2, 3]
 
@@ -308,17 +260,13 @@ class SK_Conv2D(nn.Module):  # pylint: disable=invalid-name
 
         out = torch.sum(split_out * mix_softmax, dim=0)
 
-        if self.data_format == 'channels_last':
-            out = out.permute(0, 2, 3, 1)  # NCHW -> NHWC
-
         return out
 
 class SE_Layer(nn.Module):  # pylint: disable=invalid-name
     """Squeeze and Excitation layer (https://arxiv.org/abs/1709.01507)."""
 
-    def __init__(self, filters, se_ratio, data_format='channels_first', **kwargs):
+    def __init__(self, filters, se_ratio, **kwargs):
         super(SE_Layer, self).__init__(**kwargs)
-        self.data_format = data_format
         reduced_channels = max(1, int(filters * se_ratio))
 
         self.se_reduce = nn.Conv2d(
@@ -340,8 +288,6 @@ class SE_Layer(nn.Module):  # pylint: disable=invalid-name
         )
 
     def forward(self, inputs):
-        if self.data_format == 'channels_last':
-            inputs = inputs.permute(0, 3, 1, 2)  # NHWC → NCHW
 
         # Global average pooling: [N, C, H, W] → [N, C, 1, 1]
         se_tensor = F.adaptive_avg_pool2d(inputs, output_size=1)
@@ -352,12 +298,7 @@ class SE_Layer(nn.Module):  # pylint: disable=invalid-name
 
         out = inputs * se_tensor  # broadcast multiply
 
-        if self.data_format == 'channels_last':
-            out = out.permute(0, 2, 3, 1)  # NCHW → NHWC
-
         return out
-
-
 
 class ResidualBlock(nn.Module):  # pylint: disable=missing-docstring
 
@@ -365,7 +306,6 @@ class ResidualBlock(nn.Module):  # pylint: disable=missing-docstring
                  filters,
                  strides,
                  use_projection=False,
-                 data_format='channels_first',
                  dropblock_keep_prob=None,
                  dropblock_size=None,
                  **kwargs):
@@ -373,14 +313,13 @@ class ResidualBlock(nn.Module):  # pylint: disable=missing-docstring
         del dropblock_keep_prob
         del dropblock_size
 
-        self.data_format = data_format
         self.shortcut_layers = nn.ModuleList()
         self.conv2d_bn_layers = nn.ModuleList()
 
         if use_projection:
             if args.sk_ratio > 0:  # Use ResNet-D shortcut
                 if strides > 1:
-                    self.shortcut_layers.append(FixedPadding(2, data_format))
+                    self.shortcut_layers.append(FixedPadding(2))
                 self.shortcut_layers.append(
                     nn.AvgPool2d(
                         kernel_size=2,
@@ -393,7 +332,7 @@ class ResidualBlock(nn.Module):  # pylint: disable=missing-docstring
                         filters=filters,
                         kernel_size=1,
                         strides=1,
-                        data_format=data_format
+                        
                     )
                 )
             else:
@@ -402,11 +341,11 @@ class ResidualBlock(nn.Module):  # pylint: disable=missing-docstring
                         filters=filters,
                         kernel_size=1,
                         strides=strides,
-                        data_format=data_format
+                        
                     )
                 )
             self.shortcut_layers.append(
-                BatchNormRelu(relu=False, data_format=data_format)
+                BatchNormRelu(relu=False, )
             )
 
         self.conv2d_bn_layers.append(
@@ -414,27 +353,27 @@ class ResidualBlock(nn.Module):  # pylint: disable=missing-docstring
                 filters=filters,
                 kernel_size=3,
                 strides=strides,
-                data_format=data_format
+                
             )
         )
         self.conv2d_bn_layers.append(
-            BatchNormRelu(data_format=data_format)
+            BatchNormRelu()
         )
         self.conv2d_bn_layers.append(
             Conv2dFixedPadding(
                 filters=filters,
                 kernel_size=3,
                 strides=1,
-                data_format=data_format
+                
             )
         )
         self.conv2d_bn_layers.append(
-            BatchNormRelu(relu=False, init_zero=True, data_format=data_format)
+            BatchNormRelu(relu=False, init_zero=True, )
         )
 
         self.use_se = args.se_ratio > 0
         if self.use_se:
-            self.se_layer = SE_Layer(filters, args.se_ratio, data_format=data_format)
+            self.se_layer = SE_Layer(filters, args.se_ratio, )
 
     def forward(self, inputs, training=True):
         shortcut = inputs
@@ -453,27 +392,24 @@ class ResidualBlock(nn.Module):  # pylint: disable=missing-docstring
         out = F.relu(out)
         return out
 
-
 class BottleneckBlock(nn.Module):  # """BottleneckBlock."""
 
     def __init__(self,
                  filters,
                  strides,
                  use_projection=False,
-                 data_format='channels_first',
                  dropblock_keep_prob=None,
                  dropblock_size=None,
                  **kwargs):
         super(BottleneckBlock, self).__init__(**kwargs)
 
-        self.data_format = data_format
 
         self.projection_layers = nn.ModuleList()
         if use_projection:
             filters_out = 4 * filters
             if args.sk_ratio > 0:
                 if strides > 1:
-                    self.projection_layers.append(FixedPadding(2, data_format))
+                    self.projection_layers.append(FixedPadding(2))
                 self.projection_layers.append(
                     nn.AvgPool2d(
                         kernel_size=2,
@@ -486,7 +422,7 @@ class BottleneckBlock(nn.Module):  # """BottleneckBlock."""
                         filters=filters_out,
                         kernel_size=1,
                         strides=1,
-                        data_format=data_format
+                        
                     )
                 )
             else:
@@ -495,72 +431,72 @@ class BottleneckBlock(nn.Module):  # """BottleneckBlock."""
                         filters=filters_out,
                         kernel_size=1,
                         strides=strides,
-                        data_format=data_format
+                        
                     )
                 )
             self.projection_layers.append(
-                BatchNormRelu(relu=False, data_format=data_format)
+                BatchNormRelu(relu=False, )
             )
 
         self.shortcut_dropblock = DropBlock(
             keep_prob=dropblock_keep_prob,
             dropblock_size=dropblock_size,
-            data_format=data_format
+            
         )
 
         self.conv_relu_dropblock_layers = nn.ModuleList()
 
         self.conv_relu_dropblock_layers.append(
-            Conv2dFixedPadding(filters=filters, kernel_size=1, strides=1, data_format=data_format)
+            Conv2dFixedPadding(filters=filters, kernel_size=1, strides=1, )
         )
         self.conv_relu_dropblock_layers.append(
-            BatchNormRelu(data_format=data_format)
+            BatchNormRelu()
         )
         self.conv_relu_dropblock_layers.append(
             DropBlock(
                 keep_prob=dropblock_keep_prob,
                 dropblock_size=dropblock_size,
-                data_format=data_format
+                
             )
         )
 
         if args.sk_ratio > 0:
             self.conv_relu_dropblock_layers.append(
-                SK_Conv2D(filters, strides, args.sk_ratio, data_format=data_format)
+                SK_Conv2D(filters, strides, args.sk_ratio, )
             )
         else:
             self.conv_relu_dropblock_layers.append(
-                Conv2dFixedPadding(filters=filters, kernel_size=3, strides=strides, data_format=data_format)
+                Conv2dFixedPadding(filters=filters, kernel_size=3, strides=strides, )
             )
             self.conv_relu_dropblock_layers.append(
-                BatchNormRelu(data_format=data_format)
+                BatchNormRelu()
             )
 
         self.conv_relu_dropblock_layers.append(
             DropBlock(
                 keep_prob=dropblock_keep_prob,
                 dropblock_size=dropblock_size,
-                data_format=data_format
+                
             )
         )
 
         self.conv_relu_dropblock_layers.append(
-            Conv2dFixedPadding(filters=4 * filters, kernel_size=1, strides=1, data_format=data_format)
+            Conv2dFixedPadding(filters=4 * filters, kernel_size=1, strides=1, )
         )
         self.conv_relu_dropblock_layers.append(
-            BatchNormRelu(relu=False, init_zero=True, data_format=data_format)
+            BatchNormRelu(relu=False, init_zero=True, )
         )
         self.conv_relu_dropblock_layers.append(
             DropBlock(
                 keep_prob=dropblock_keep_prob,
                 dropblock_size=dropblock_size,
-                data_format=data_format
+                
             )
         )
 
         self.use_se = args.se_ratio > 0
         if self.use_se:
-            self.se_layer = SE_Layer(filters, args.se_ratio, data_format=data_format)
+            self.se_layer = SE_Layer(filters, args.se_ratio, )
 
     def forward(self, inputs, training=True):
         shortcut = inputs
@@ -580,7 +516,6 @@ class BottleneckBlock(nn.Module):  # """BottleneckBlock."""
         out = F.relu(out)
         return out
 
-
 class BlockGroup(nn.Module):  # pylint: disable=missing-docstring
 
     def __init__(self,
@@ -588,7 +523,6 @@ class BlockGroup(nn.Module):  # pylint: disable=missing-docstring
                  block_fn,
                  blocks,
                  strides,
-                 data_format='channels_first',
                  dropblock_keep_prob=None,
                  dropblock_size=None,
                  **kwargs):
@@ -601,7 +535,6 @@ class BlockGroup(nn.Module):  # pylint: disable=missing-docstring
                 filters,
                 strides,
                 use_projection=True,
-                data_format=data_format,
                 dropblock_keep_prob=dropblock_keep_prob,
                 dropblock_size=dropblock_size
             )
@@ -613,7 +546,6 @@ class BlockGroup(nn.Module):  # pylint: disable=missing-docstring
                     filters,
                     1,
                     use_projection=False,
-                    data_format=data_format,
                     dropblock_keep_prob=dropblock_keep_prob,
                     dropblock_size=dropblock_size
                 )
@@ -629,20 +561,16 @@ class BlockGroup(nn.Module):  # pylint: disable=missing-docstring
         # Mimic tf.identity(out, name) (name used for tracking only in PyTorch)
         return out.clone()
 
-
 class Resnet(nn.Module):  # pylint: disable=missing-docstring
 
     def __init__(self,
                  block_fn,
                  layers,
                  width_multiplier,
-                 cifar_stem=False,
-                 data_format='channels_first',
                  dropblock_keep_probs=None,
                  dropblock_size=None,
                  **kwargs):
         super(Resnet, self).__init__(**kwargs)
-        self.data_format = data_format
 
         if dropblock_keep_probs is None:
             dropblock_keep_probs = [None] * 4
@@ -650,82 +578,59 @@ class Resnet(nn.Module):  # pylint: disable=missing-docstring
             raise ValueError('dropblock_keep_probs is not valid:', dropblock_keep_probs)
 
         trainable = (
-            args.train_mode != 'finetune' or args.fine_tune_after_block == -1
+                args.train_mode != 'finetune' or args.fine_tune_after_block == -1
         )
 
         self.initial_conv_relu_max_pool = nn.ModuleList()
 
-        if cifar_stem:
+        if args.sk_ratio > 0:
+            self.initial_conv_relu_max_pool.append(
+                Conv2dFixedPadding(
+                    filters=64 * width_multiplier // 2,
+                    kernel_size=3,
+                    strides=2,
+                )
+            )
+            self.initial_conv_relu_max_pool.append(
+                BatchNormRelu()
+            )
+            self.initial_conv_relu_max_pool.append(
+                Conv2dFixedPadding(
+                    filters=64 * width_multiplier // 2,
+                    kernel_size=3,
+                    strides=1,
+                )
+            )
+            self.initial_conv_relu_max_pool.append(
+                BatchNormRelu()
+            )
             self.initial_conv_relu_max_pool.append(
                 Conv2dFixedPadding(
                     filters=64 * width_multiplier,
                     kernel_size=3,
                     strides=1,
-                    data_format=data_format,
                 )
-            )
-            self.initial_conv_relu_max_pool.append(
-                IdentityLayer()
-            )
-            self.initial_conv_relu_max_pool.append(
-                BatchNormRelu(data_format=data_format)
-            )
-            self.initial_conv_relu_max_pool.append(
-                IdentityLayer()
             )
         else:
-            if args.sk_ratio > 0:
-                self.initial_conv_relu_max_pool.append(
-                    Conv2dFixedPadding(
-                        filters=64 * width_multiplier // 2,
-                        kernel_size=3,
-                        strides=2,
-                        data_format=data_format,
-                    )
-                )
-                self.initial_conv_relu_max_pool.append(
-                    BatchNormRelu(data_format=data_format)
-                )
-                self.initial_conv_relu_max_pool.append(
-                    Conv2dFixedPadding(
-                        filters=64 * width_multiplier // 2,
-                        kernel_size=3,
-                        strides=1,
-                        data_format=data_format,
-                    )
-                )
-                self.initial_conv_relu_max_pool.append(
-                    BatchNormRelu(data_format=data_format)
-                )
-                self.initial_conv_relu_max_pool.append(
-                    Conv2dFixedPadding(
-                        filters=64 * width_multiplier,
-                        kernel_size=3,
-                        strides=1,
-                        data_format=data_format,
-                    )
-                )
-            else:
-                self.initial_conv_relu_max_pool.append(
-                    Conv2dFixedPadding(
-                        filters=64 * width_multiplier,
-                        kernel_size=7,
-                        strides=2,
-                        data_format=data_format,
-                    )
-                )
             self.initial_conv_relu_max_pool.append(
-                IdentityLayer()
+                Conv2dFixedPadding(
+                    filters=64 * width_multiplier,
+                    kernel_size=7,
+                    strides=2,
+                )
             )
-            self.initial_conv_relu_max_pool.append(
-                BatchNormRelu(data_format=data_format)
-            )
-            self.initial_conv_relu_max_pool.append(
-                nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-            )
-            self.initial_conv_relu_max_pool.append(
-                IdentityLayer()
-            )
+        self.initial_conv_relu_max_pool.append(
+            IdentityLayer()
+        )
+        self.initial_conv_relu_max_pool.append(
+            BatchNormRelu()
+        )
+        self.initial_conv_relu_max_pool.append(
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        )
+        self.initial_conv_relu_max_pool.append(
+            IdentityLayer()
+        )
 
         self.block_groups = nn.ModuleList()
 
@@ -738,7 +643,6 @@ class Resnet(nn.Module):  # pylint: disable=missing-docstring
                 block_fn=block_fn,
                 blocks=blocks,
                 strides=strides,
-                data_format=data_format,
                 dropblock_keep_prob=dropblock_keep_probs[index],
                 dropblock_size=dropblock_size,
                 name=f'block_group{index + 1}'
@@ -757,63 +661,55 @@ class Resnet(nn.Module):  # pylint: disable=missing-docstring
 
         for i, block_group in enumerate(self.block_groups):
             if args.train_mode == 'finetune' and args.fine_tune_after_block == i:
-                out = out.detach()  # tf.stop_gradient
+                out = out.detach()  # stop gradient at finetune
             out = block_group(out)
 
         if args.train_mode == 'finetune' and args.fine_tune_after_block == 4:
-            out = out.detach()
+          out = out.detach()
 
-        if self.data_format == 'channels_last':
-            out = torch.mean(out, dim=(1, 2))  # Global average pool NHWC
-        else:
-            out = torch.mean(out, dim=(2, 3))  # Global average pool NCHW
+        out = torch.mean(out, dim=(2, 3))  # Global average pool NCHW
 
         return out.clone()  # tf.identity(out, 'final_avg_pool')
 
-
 def resnet(resnet_depth,
            width_multiplier,
-           cifar_stem=False,
-           data_format='channels_first',
            dropblock_keep_probs=None,
            dropblock_size=None):
-  """Returns the ResNet model for a given size and number of output classes."""
-  model_params = {
-      18: {
-          'block': ResidualBlock,
-          'layers': [2, 2, 2, 2]
-      },
-      34: {
-          'block': ResidualBlock,
-          'layers': [3, 4, 6, 3]
-      },
-      50: {
-          'block': BottleneckBlock,
-          'layers': [3, 4, 6, 3]
-      },
-      101: {
-          'block': BottleneckBlock,
-          'layers': [3, 4, 23, 3]
-      },
-      152: {
-          'block': BottleneckBlock,
-          'layers': [3, 8, 36, 3]
-      },
-      200: {
-          'block': BottleneckBlock,
-          'layers': [3, 24, 36, 3]
-      }
-  }
+    """Returns the ResNet model for a given size and number of output classes."""
+    model_params = {
+        18: {
+            'block': ResidualBlock,
+            'layers': [2, 2, 2, 2]
+        },
+        34: {
+            'block': ResidualBlock,
+            'layers': [3, 4, 6, 3]
+        },
+        50: {
+            'block': BottleneckBlock,
+            'layers': [3, 4, 6, 3]
+        },
+        101: {
+            'block': BottleneckBlock,
+            'layers': [3, 4, 23, 3]
+        },
+        152: {
+            'block': BottleneckBlock,
+            'layers': [3, 8, 36, 3]
+        },
+        200: {
+            'block': BottleneckBlock,
+            'layers': [3, 24, 36, 3]
+        }
+    }
 
-  if resnet_depth not in model_params:
-    raise ValueError('Not a valid resnet_depth:', resnet_depth)
+    if resnet_depth not in model_params:
+        raise ValueError('Not a valid resnet_depth:', resnet_depth)
 
-  params = model_params[resnet_depth]
-  return Resnet(
-      params['block'],
-      params['layers'],
-      width_multiplier,
-      cifar_stem=cifar_stem,
-      dropblock_keep_probs=dropblock_keep_probs,
-      dropblock_size=dropblock_size,
-      data_format=data_format)
+    params = model_params[resnet_depth]
+    return Resnet(
+        params['block'],
+        params['layers'],
+        width_multiplier,
+        dropblock_keep_probs=dropblock_keep_probs,
+        dropblock_size=dropblock_size)

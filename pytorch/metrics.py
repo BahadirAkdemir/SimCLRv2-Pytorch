@@ -1,24 +1,75 @@
-# coding=utf-8
-# Copyright 2020 The SimCLR Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific simclr governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Training utilities."""
-
 import torch
 import torch.nn.functional as F
 import numpy as np
 import logging
+
+
+class MeanMetric:
+    def __init__(self, name='mean'):
+        self.name = name
+        self.total = 0.0
+        self.count = 0
+
+    def update_state(self, value):
+        self.total += value
+        self.count += 1
+
+    def result(self):
+        return self.total / self.count if self.count != 0 else 0.0
+
+    def reset(self):
+        self.total = 0.0
+        self.count = 0
+
+
+class Top1Accuracy:
+    def __init__(self, name='top1_acc'):
+        self.name = name
+        self.correct = 0
+        self.total = 0
+
+    def update_state(self, y_true, y_pred):
+        if y_true.dim() != 1:
+            y_true = torch.argmax(y_true, dim=1)
+        if y_pred.dim() != 1:
+            y_pred = torch.argmax(y_pred, dim=1)
+
+        self.correct += (y_true == y_pred).sum().item()
+        self.total += y_true.size(0)
+
+    def result(self):
+        return self.correct / self.total if self.total != 0 else 0.0
+
+    def reset(self):
+        self.correct = 0
+        self.total = 0
+
+class Top5Accuracy:
+    def __init__(self, name='top5_acc'):
+        self.name = name
+        self.correct = 0
+        self.total = 0
+
+    def update_state(self, y_true, y_pred):
+        """
+        y_true: (batch_size, num_classes) or (batch_size,)
+        y_pred: (batch_size, num_classes)
+        """
+        if y_true.dim() != 1:
+            y_true = torch.argmax(y_true, dim=1)
+
+        # Top 5 predictions
+        top5 = torch.topk(y_pred, k=5, dim=1).indices  # (batch_size, 5)
+        match = top5.eq(y_true.unsqueeze(1))  # (batch_size, 5)
+        self.correct += match.any(dim=1).sum().item()
+        self.total += y_true.size(0)
+
+    def result(self):
+        return self.correct / self.total if self.total != 0 else 0.0
+
+    def reset(self):
+        self.correct = 0
+        self.total = 0
 
 
 def update_pretrain_metrics_train(contrast_loss, contrast_acc, contrast_entropy,
@@ -26,9 +77,9 @@ def update_pretrain_metrics_train(contrast_loss, contrast_acc, contrast_entropy,
     """Updated pretraining metrics."""
     contrast_loss.update_state(loss.item())
 
-    contrast_acc_val = torch.argmax(labels_con, dim=1) == torch.argmax(logits_con, dim=1)
-    contrast_acc_val = contrast_acc_val.float().mean().item()
-    contrast_acc.update_state(contrast_acc_val)
+    y_true = torch.argmax(labels_con, dim=1)
+    y_pred = torch.argmax(logits_con, dim=1)
+    contrast_acc.update_state(y_true, y_pred)
 
     prob_con = F.softmax(logits_con, dim=1)
     entropy_con = -torch.sum(prob_con * torch.log(prob_con + 1e-8), dim=1).mean().item()
@@ -41,9 +92,9 @@ def update_pretrain_metrics_eval(contrast_loss_metric,
                                  contrast_loss, logits_con, labels_con):
     contrast_loss_metric.update_state(contrast_loss.item())
 
-    pred_top1 = torch.argmax(logits_con, dim=1)
-    true_top1 = torch.argmax(labels_con, dim=1)
-    contrastive_top_1_accuracy_metric.update_state(true_top1, pred_top1)
+    y_true = torch.argmax(labels_con, dim=1)
+    y_pred = torch.argmax(logits_con, dim=1)
+    contrastive_top_1_accuracy_metric.update_state(y_true, y_pred)
 
     contrastive_top_5_accuracy_metric.update_state(labels_con, logits_con)
 
@@ -52,30 +103,28 @@ def update_finetune_metrics_train(supervised_loss_metric, supervised_acc_metric,
                                   loss, labels, logits):
     supervised_loss_metric.update_state(loss.item())
 
-    pred_labels = torch.argmax(logits, dim=1)
-    true_labels = torch.argmax(labels, dim=1)
-    acc = (pred_labels == true_labels).float().mean().item()
-    supervised_acc_metric.update_state(acc)
+    y_true = labels                     # Already class indices
+    y_pred = torch.argmax(logits, dim=1)
+    supervised_acc_metric.update_state(y_true, y_pred)
+
 
 
 def update_finetune_metrics_eval(label_top_1_accuracy_metrics,
                                  label_top_5_accuracy_metrics, outputs, labels):
-    pred_top1 = torch.argmax(outputs, dim=1)
-    true_top1 = torch.argmax(labels, dim=1)
-    label_top_1_accuracy_metrics.update_state(true_top1, pred_top1)
+    y_true = torch.argmax(labels, dim=1)
+    y_pred = torch.argmax(outputs, dim=1)
+    label_top_1_accuracy_metrics.update_state(y_true, y_pred)
 
     label_top_5_accuracy_metrics.update_state(labels, outputs)
 
 
 def _float_metric_value(metric):
-    """Gets the value of a float-value metric object."""
     return float(metric.result())
 
 
-def log_and_write_metrics_to_summary(all_metrics, global_step):
+def log_and_write_metrics_to_summary(all_metrics, global_step, summary_writer):
     for metric in all_metrics:
         metric_value = _float_metric_value(metric)
         logging.info('Step: [%d] %s = %f', global_step, metric.name, metric_value)
-        # In PyTorch, you typically log via tensorboardX or torch.utils.tensorboard
-        # Here’s a placeholder for that:
-        # writer.add_scalar(metric.name, metric_value, global_step)
+        summary_writer.add_scalar(metric.name, metric_value, global_step)
+

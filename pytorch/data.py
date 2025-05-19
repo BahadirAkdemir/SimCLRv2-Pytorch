@@ -1,5 +1,7 @@
 import functools
 import logging
+import os
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, DistributedSampler
@@ -8,7 +10,8 @@ from torchvision import datasets, transforms
 import data_util
 from .config_args import args
 
-def build_input_fn(builder, global_batch_size, topology, is_training):
+
+def build_input_fn(builder, global_batch_size, is_training):
     def _input_fn(input_context):
         batch_size = global_batch_size // torch.distributed.get_world_size()
         logging.info(f'Global batch size: {global_batch_size}')
@@ -65,8 +68,8 @@ def build_input_fn(builder, global_batch_size, topology, is_training):
     return _input_fn
 
 
-def build_distributed_dataset(builder, batch_size, is_training, strategy, topology):
-    return build_input_fn(builder, batch_size, topology, is_training)(strategy)
+def build_distributed_dataset(builder, batch_size, is_training, strategy):
+    return build_input_fn(builder, batch_size, is_training)(strategy)
 
 
 def get_preprocess_fn(is_training, is_pretrain):
@@ -81,3 +84,16 @@ def get_preprocess_fn(is_training, is_pretrain):
         color_jitter_strength=color_jitter_strength,
         test_crop=test_crop
     )
+
+
+class DatasetBuilder:
+    def __init__(self, root):
+        self.root = root
+        self.classes = sorted(os.listdir(root))  # If using classification-style structure
+
+# Usage
+#builder = DatasetBuilder(root='/path/to/classification/dataset')  # or use your regression version
+#strategy = torch.distributed.get_rank()  # Dummy placeholder; replace with your actual strategy context
+
+#train_loader = build_distributed_dataset(builder, batch_size=64, is_training=True, strategy=strategy)
+#eval_loader = build_distributed_dataset(builder, batch_size=64, is_training=False, strategy=strategy)
